@@ -137,7 +137,7 @@ Item {
     case NotificationUrgency.Low:
       return Math.min(maxPopupDuration, Math.max(lowPopupDuration, requestedDuration(expireTimeout)))
     default:
-      return Math.min(maxPopupDuration, requestedDuration(expireTimeout) || normalDuration)
+      return Math.min(maxPopupDuration, Math.max(normalDuration, requestedDuration(expireTimeout)))
     }
   }
 
@@ -947,10 +947,25 @@ Item {
     })
   }
 
+  function sendPreview() {
+    Util.execArgv([
+      "notify-send",
+      "-a", "Slack",
+      "-h", "string:x-kde-tag:channel_dev",
+      "Alice in #dev",
+      "G-492019 is your staging deploy verification code."
+    ])
+  }
+
   // ---------------------------------------------------- IPC
 
   IpcHandler {
     target: "notifications"
+
+    function preview(): string {
+      service.sendPreview()
+      return "ok"
+    }
 
     function dndState(): string {
       return service.doNotDisturb ? "on" : "off"

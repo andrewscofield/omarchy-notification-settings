@@ -417,13 +417,17 @@ KeyboardPanel {
               cursorShape: Qt.PointingHandCursor
               onClicked: {
                 root.previewSent = true
-                Util.execProcess([
-                  "notify-send",
-                  "-a", "Slack",
-                  "-h", "string:x-kde-tag:channel_dev",
-                  "Alice in #dev",
-                  "G-492019 is your staging deploy verification code."
-                ])
+                if (root.service && typeof root.service.sendPreview === "function") {
+                  root.service.sendPreview()
+                } else {
+                  Util.execArgv([
+                    "notify-send",
+                    "-a", "Slack",
+                    "-h", "string:x-kde-tag:channel_dev",
+                    "Alice in #dev",
+                    "G-492019 is your staging deploy verification code."
+                  ])
+                }
                 previewResetTimer.restart()
               }
             }
