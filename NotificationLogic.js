@@ -437,37 +437,38 @@ function extractOtp(summary, body) {
 
   // 1. Google verification codes: "G-123456 is your code" or "Google: G-123456"
   var gMatch = text.match(/\bG-([0-9]{6})\b/i)
-  if (gMatch) return { code: gMatch[1], raw: gMatch[0] }
+  if (gMatch) return { code: gMatch[1], raw: gMatch[1] }
 
   // 2. High-confidence contextual patterns:
   var patterns = [
-    /(?:verification|security|authentication|auth|confirmation|login|access|one-time|otp|passcode|pin)\s+code\s*(?:is|:|=|-)?\s*[:#]?\s*([0-9]{4,8}|[0-9]{3}[-\s][0-9]{3}|[A-Z0-9]{5,8})\b/i,
-    /\b(?:code|otp|passcode|pin)\s*(?:is|:|=)\s*[:#]?\s*([0-9]{4,8}|[0-9]{3}[-\s][0-9]{3}|[A-Z0-9]{5,8})\b/i,
-    /\b([0-9]{4,8}|[0-9]{3}[-\s][0-9]{3})\s+is\s+your\s+(?:[a-z0-9_-]+\s+)?(?:verification|security|authentication|login|confirmation|access|one-time|otp|code)/i,
-    /(?:use|enter|type|input)\s+(?:code\s+)?([0-9]{4,8}|[0-9]{3}[-\s][0-9]{3})\s+to\s+(?:verify|log\s*in|sign\s*in|authenticate|confirm|continue|access)/i,
-    /(?:Steam\s+Guard|GitHub|Discord|Slack|Telegram|WhatsApp|Signal|Uber|Amazon|Apple|Microsoft|Twitter|Twitch|Epic\s+Games|Bank)\s*(?:security\s*|verification\s*|auth\s*)?(?:code|pin)?\s*[:=]\s*([0-9]{4,8}|[A-Z0-9]{5,8})\b/i
+    /(?:verification|security|authentication|auth|confirmation|login|access|one-time|otp|passcode|pin)\s+code\s*(?:is|:|=|-)?\s*[:#]?\s*([A-Z]-?[0-9]{4,8}|[0-9]{4,8}|[0-9]{3}[-\s][0-9]{3}|[A-Z0-9]{5,8})\b/i,
+    /\b(?:code|otp|passcode|pin)\s*(?:is|:|=)\s*[:#]?\s*([A-Z]-?[0-9]{4,8}|[0-9]{4,8}|[0-9]{3}[-\s][0-9]{3}|[A-Z0-9]{5,8})\b/i,
+    /\b([A-Z]-?[0-9]{4,8}|[0-9]{4,8}|[0-9]{3}[-\s][0-9]{3})\s+is\s+your\s+(?:[a-z0-9_-]+\s+)?(?:verification|security|authentication|login|confirmation|access|one-time|otp|code)/i,
+    /(?:use|enter|type|input)\s+(?:code\s+)?([A-Z]-?[0-9]{4,8}|[0-9]{4,8}|[0-9]{3}[-\s][0-9]{3})\s+to\s+(?:verify|log\s*in|sign\s*in|authenticate|confirm|continue|access)/i,
+    /(?:Steam\s+Guard|GitHub|Discord|Slack|Telegram|WhatsApp|Signal|Uber|Amazon|Apple|Microsoft|Twitter|Twitch|Epic\s+Games|Bank)\s*(?:security\s*|verification\s*|auth\s*)?(?:code|pin)?\s*[:=]\s*([A-Z]-?[0-9]{4,8}|[0-9]{4,8}|[A-Z0-9]{5,8})\b/i
   ]
 
   for (var i = 0; i < patterns.length; i++) {
     var match = text.match(patterns[i])
     if (match && match[1]) {
       var rawCode = match[1].trim()
-      var cleanCode = rawCode.replace(/[-\s]/g, "")
+      // Strip any single letter or # prefix like G-, V-, #
+      var cleanCode = rawCode.replace(/^[A-Za-z#]-?/i, "").replace(/[-\s]/g, "")
       // Avoid matching years
       if (cleanCode.length === 4 && (cleanCode.indexOf("19") === 0 || cleanCode.indexOf("20") === 0)) {
         continue
       }
-      return { code: cleanCode, raw: rawCode }
+      return { code: cleanCode, raw: cleanCode }
     }
   }
 
   // 3. Fallback: If text contains strong OTP keywords, find 4-8 digit numbers
   if (/\b(?:otp|2fa|mfa|one-time\s+password|verification\s+code|passcode)\b/i.test(text)) {
-    var fallbackMatch = text.match(/\b([0-9]{3}[-\s][0-9]{3}|[0-9]{4,8})\b/)
+    var fallbackMatch = text.match(/\b([A-Z]-?[0-9]{6}|[0-9]{3}[-\s][0-9]{3}|[0-9]{4,8})\b/i)
     if (fallbackMatch) {
-      var clean = fallbackMatch[1].replace(/[-\s]/g, "")
+      var clean = fallbackMatch[1].replace(/^[A-Za-z#]-?/i, "").replace(/[-\s]/g, "")
       if (!(clean.length === 4 && (clean.indexOf("19") === 0 || clean.indexOf("20") === 0))) {
-        return { code: clean, raw: fallbackMatch[1] }
+        return { code: clean, raw: clean }
       }
     }
   }
