@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "andrewscofield.notifications-settings",
+  "name": "Omarchy Notifications Settings",
+  "version": "1.0.0",
+  "author": "Andrew Scofield",
+  "license": "MIT",
+  "description": "Enhanced notification daemon and control panel with 6 screen positions, 1-click 2FA/OTP code copy, smart channel grouping, and live preview.",
+  "kinds": [
+    "service",
+    "bar-widget"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Notification Settings",
+    "description": "Configure notifications, preview toasts, and manage settings",
+    "category": "System",
+    "allowMultiple": false
+  },
+  "omarchy": {
+    "clonedFrom": "omarchy.notifications"
+  }
+}
