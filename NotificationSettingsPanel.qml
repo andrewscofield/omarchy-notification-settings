@@ -417,7 +417,7 @@ KeyboardPanel {
               cursorShape: Qt.PointingHandCursor
               onClicked: {
                 root.previewSent = true
-                Quickshell.execDetached([
+                Util.execProcess([
                   "notify-send",
                   "-a", "Slack",
                   "-h", "string:x-kde-tag:channel_dev",

@@ -1108,9 +1108,13 @@ Item {
 
             // Each card sizes itself based on mode (text vs media); the slot
             // tracks the card so the column auto-fits to whichever is widest.
-            Layout.preferredWidth: card.implicitWidth
-            Layout.alignment: popupWindow.popupPlacement.isLeft ? Qt.AlignLeft : (popupWindow.popupPlacement.isRight ? Qt.AlignRight : Qt.AlignHCenter)
+            width: card.implicitWidth
+            height: card.implicitHeight
+            implicitWidth: card.implicitWidth
             implicitHeight: card.implicitHeight
+            Layout.preferredWidth: card.implicitWidth
+            Layout.preferredHeight: card.implicitHeight
+            Layout.alignment: popupWindow.popupPlacement.isLeft ? Qt.AlignLeft : (popupWindow.popupPlacement.isRight ? Qt.AlignRight : Qt.AlignHCenter)
 
             readonly property real lifetime: service.durationFor(cardSlot.urgency, cardSlot.expireTimeout, cardSlot.app, cardSlot.appIcon)
             property real remainingLifetime: 1.0
@@ -1142,7 +1146,7 @@ Item {
 
             NotificationCard {
               id: card
-              anchors.horizontalCenter: parent.horizontalCenter
+              anchors.fill: parent
               app: cardSlot.app
               appIcon: cardSlot.appIcon
               summary: cardSlot.summary
