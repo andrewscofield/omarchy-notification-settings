@@ -68,12 +68,16 @@ var MAX_IMAGE_CHARS = 512
 
 function sanitizeText(val, maxChars) {
   if (val === undefined || val === null) return ""
-  var s = String(val)
+  // Strip Unicode directional formatting isolates (FSI, PDI, LRI, RLI, LTR, RTL marks) used by apps like Signal
+  var s = String(val).replace(/[\u200E\u200F\u202A-\u202E\u2066-\u2069]/g, "")
+  // Strip Unicode directional formatting isolates (FSI, PDI, LRI, RLI, LTR, RTL marks) used by apps like Signal
+  var s = String(val).replace(/[\u200E\u200F\u202A-\u202E\u2066-\u2069]/g, "")
   if (s.length > maxChars) {
     s = s.slice(0, maxChars)
   }
   // Strip dangerous control characters except newline and tab
-  return s.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "")
+  return s.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "").trim()
+  return s.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "").trim()
 }
 
 function validateImageSource(src) {
@@ -101,33 +105,48 @@ function shouldRenderCompactGlyph(glyph, iconSource, singleLineToast) {
 function extractChannel(app, summary, body, hints) {
   hints = hints || {}
   var tag = (stringHint(hints, "x-kde-tag") || stringHint(hints, "tag") || stringHint(hints, "group") || stringHint(hints, "thread-id") || "").trim()
-  var s = String(summary || "").trim()
-
-  // 1. Explicit channel/group syntax in summary (Slack, Discord, IRC, Teams)
-  // e.g. "Alice in #dev", "#general", "MyServer > #dev"
-  var hashMatch = s.match(/(?:in\s+|>\s*)?(#[\w-]+)/i)
-  if (hashMatch) {
-    return hashMatch[1]
-  }
-
-  // 2. Parenthesized channel or DM:
-  // e.g. "Bob (#general)", "Alice (Direct Message)"
-  var parenMatch = s.match(/\(([^)]+)\)/)
-  if (parenMatch && (parenMatch[1].indexOf("#") === 0 || /direct\s*message|dm/i.test(parenMatch[1]))) {
-    return parenMatch[1]
-  }
-
-  // 3. Group chat prefix with colon (Signal, Telegram, WhatsApp):
-  // e.g. "Dev Team: Alice", "Family: Bob"
-  var colonMatch = s.match(/^([^:]+):\s*(.+)$/)
-  if (colonMatch && colonMatch[1].indexOf("http") === -1 && colonMatch[1].length < 30) {
-    return colonMatch[1].trim()
-  }
-
-  // 4. Tag hint from web / Electron app
   if (tag) {
     var cleanedTag = tag.replace(/^slack-channel-/, "#").replace(/^channel_/, "#")
     if (cleanedTag.length > 0) return cleanedTag
+  }
+
+  var s = sanitizeText(summary, MAX_SUMMARY_CHARS)
+  if (!s) return ""
+
+  // 1. Bracketed channel/workspace (Slack, IRC, Discord):
+  // e.g. "[server] from user", "[dev] Alice: hi"
+  var bracketMatch = s.match(/^\[([^\]]{2,50})\](?:\s+(?:from|:)\s+.+)?$/i)
+  if (bracketMatch) {
+    var ch = bracketMatch[1].trim()
+    return ch.indexOf("#") === 0 ? ch : ("#" + ch)
+  }
+
+  // 2. "... in <channel/group>" (Signal, Slack, Discord, Teams, Telegram):
+  // e.g. "Andrew in family chat", "Alice in #dev", "Bob in Project Alpha"
+  var inMatch = s.match(/(?:^|\s+)in\s+([^\(\)\[\]:]{2,50})$/i)
+  if (inMatch) {
+    return inMatch[1].trim()
+  }
+
+  // 3. Parenthesized channel or group:
+  // e.g. "Bob (#general)", "Alice (family chat)"
+  var parenMatch = s.match(/\(([^)]+)\)/)
+  if (parenMatch && parenMatch[1].trim().length >= 2) {
+    return parenMatch[1].trim()
+  }
+
+  // 4. Group chat prefix with colon (Signal, Telegram, WhatsApp):
+  // e.g. "family chat: Andrew", "Dev Team: Alice"
+  var colonMatch = s.match(/^([^:\n]{2,35}):\s+(.+)$/)
+  if (colonMatch && colonMatch[1].indexOf("http") === -1) {
+    return colonMatch[1].trim()
+  }
+
+  // 5. Channel/hierarchy prefix with ">" (Discord, Slack, Matrix):
+  // e.g. "MyServer > family-chat > Alice"
+  var arrowMatch = s.match(/(?:^|>\s*)([a-zA-Z0-9_\-# ]{2,35})\s*>\s*[^>]+$/)
+  if (arrowMatch) {
+    return arrowMatch[1].trim()
   }
 
   return ""
@@ -488,20 +507,37 @@ function extractOtp(summary, body) {
   if (gMatch) return { code: gMatch[1], raw: gMatch[1] }
 
   // 2. High-confidence contextual patterns:
+  // Requires explicit delimiter (: = is -) or strong framing.
+  // OTP codes are strictly numeric (4-8 digits, e.g. 123456 or 123-456).
+  // Pure alphabetic English words (like "review", "request", "login") MUST NEVER match.
+  var numPattern = "(?:[A-Z]-)?([0-9]{4,8}|[0-9]{3}[-\\s][0-9]{3})"
+  // Requires explicit delimiter (: = is -) or strong framing.
+  // OTP codes are strictly numeric (4-8 digits, e.g. 123456 or 123-456).
+  // Pure alphabetic English words (like "review", "request", "login") MUST NEVER match.
+  var numPattern = "(?:[A-Z]-)?([0-9]{4,8}|[0-9]{3}[-\\s][0-9]{3})"
   var patterns = [
-    /(?:verification|security|authentication|auth|confirmation|login|access|one-time|otp|passcode|pin)\s+code\s*(?:is|:|=|-)?\s*[:#]?\s*([A-Z]-?[0-9]{4,8}|[0-9]{4,8}|[0-9]{3}[-\s][0-9]{3}|[A-Z0-9]{5,8})\b/i,
-    /\b(?:code|otp|passcode|pin)\s*(?:is|:|=)\s*[:#]?\s*([A-Z]-?[0-9]{4,8}|[0-9]{4,8}|[0-9]{3}[-\s][0-9]{3}|[A-Z0-9]{5,8})\b/i,
-    /\b([A-Z]-?[0-9]{4,8}|[0-9]{4,8}|[0-9]{3}[-\s][0-9]{3})\s+is\s+your\s+(?:[a-z0-9_-]+\s+)?(?:verification|security|authentication|login|confirmation|access|one-time|otp|code)/i,
-    /(?:use|enter|type|input)\s+(?:code\s+)?([A-Z]-?[0-9]{4,8}|[0-9]{4,8}|[0-9]{3}[-\s][0-9]{3})\s+to\s+(?:verify|log\s*in|sign\s*in|authenticate|confirm|continue|access)/i,
-    /(?:Steam\s+Guard|GitHub|Discord|Slack|Telegram|WhatsApp|Signal|Uber|Amazon|Apple|Microsoft|Twitter|Twitch|Epic\s+Games|Bank)\s*(?:security\s*|verification\s*|auth\s*)?(?:code|pin)?\s*[:=]\s*([A-Z]-?[0-9]{4,8}|[0-9]{4,8}|[A-Z0-9]{5,8})\b/i
+    new RegExp("(?:verification|security|authentication|auth|confirmation|login|access|one-time|otp|passcode|pin)\\s+code\\s*(?:is|:|=|-)\\s*[:#]?\\s*" + numPattern + "\\b", "i"),
+    new RegExp("\\b(?:code|otp|passcode|pin)\\s*(?:is|:|=)\\s*[:#]?\\s*" + numPattern + "\\b", "i"),
+    new RegExp("\\b" + numPattern + "\\s+is\\s+your\\s+(?:[a-z0-9_-]+\\s+)?(?:verification|security|authentication|login|confirmation|access|one-time|otp|code)\\b", "i"),
+    new RegExp("(?:use|enter|type|input)\\s+(?:code\\s+)?" + numPattern + "\\s+to\\s+(?:verify|log\\s*in|sign\\s*in|authenticate|confirm|continue|access)\\b", "i"),
+    // Steam Guard specifically uses 5 alphanumeric characters
+    /\bSteam\s+Guard\s*(?:code)?\s*[:=]\s*([A-Z0-9]{5})\b/i
+    new RegExp("(?:verification|security|authentication|auth|confirmation|login|access|one-time|otp|passcode|pin)\\s+code\\s*(?:is|:|=|-)\\s*[:#]?\\s*" + numPattern + "\\b", "i"),
+    new RegExp("\\b(?:code|otp|passcode|pin)\\s*(?:is|:|=)\\s*[:#]?\\s*" + numPattern + "\\b", "i"),
+    new RegExp("\\b" + numPattern + "\\s+is\\s+your\\s+(?:[a-z0-9_-]+\\s+)?(?:verification|security|authentication|login|confirmation|access|one-time|otp|code)\\b", "i"),
+    new RegExp("(?:use|enter|type|input)\\s+(?:code\\s+)?" + numPattern + "\\s+to\\s+(?:verify|log\\s*in|sign\\s*in|authenticate|confirm|continue|access)\\b", "i"),
+    // Steam Guard specifically uses 5 alphanumeric characters
+    /\bSteam\s+Guard\s*(?:code)?\s*[:=]\s*([A-Z0-9]{5})\b/i
   ]
 
   for (var i = 0; i < patterns.length; i++) {
     var match = text.match(patterns[i])
     if (match && match[1]) {
       var rawCode = match[1].trim()
-      // Strip any single letter or # prefix like G-, V-, #
-      var cleanCode = rawCode.replace(/^[A-Za-z#]-?/i, "").replace(/[-\s]/g, "")
+      // Strip any single-letter prefix with hyphen (e.g. V-123456 -> 123456)
+      var cleanCode = rawCode.replace(/^[A-Za-z]-/, "").replace(/[-\s]/g, "")
+      // Strip any single-letter prefix with hyphen (e.g. V-123456 -> 123456)
+      var cleanCode = rawCode.replace(/^[A-Za-z]-/, "").replace(/[-\s]/g, "")
       // Avoid matching years
       if (cleanCode.length === 4 && (cleanCode.indexOf("19") === 0 || cleanCode.indexOf("20") === 0)) {
         continue
@@ -511,10 +547,13 @@ function extractOtp(summary, body) {
   }
 
   // 3. Fallback: If text contains strong OTP keywords, find 4-8 digit numbers
-  if (/\b(?:otp|2fa|mfa|one-time\s+password|verification\s+code|passcode)\b/i.test(text)) {
-    var fallbackMatch = text.match(/\b([A-Z]-?[0-9]{6}|[0-9]{3}[-\s][0-9]{3}|[0-9]{4,8})\b/i)
+  if (/\b(?:your\s+one-time\s+password|your\s+otp|your\s+passcode|2fa\s+code|mfa\s+code)\b/i.test(text)) {
+    var fallbackMatch = text.match(/\b([0-9]{3}[-\s][0-9]{3}|[0-9]{4,8})\b/)
+  if (/\b(?:your\s+one-time\s+password|your\s+otp|your\s+passcode|2fa\s+code|mfa\s+code)\b/i.test(text)) {
+    var fallbackMatch = text.match(/\b([0-9]{3}[-\s][0-9]{3}|[0-9]{4,8})\b/)
     if (fallbackMatch) {
-      var clean = fallbackMatch[1].replace(/^[A-Za-z#]-?/i, "").replace(/[-\s]/g, "")
+      var clean = fallbackMatch[1].replace(/[-\s]/g, "")
+      var clean = fallbackMatch[1].replace(/[-\s]/g, "")
       if (!(clean.length === 4 && (clean.indexOf("19") === 0 || clean.indexOf("20") === 0))) {
         return { code: clean, raw: clean }
       }
