@@ -57,14 +57,41 @@ function glyphFromHints(hints) {
   return stringHint(hints, "omarchy-glyph")
 }
 
-// Shell command to run when the card is clicked, sent by
-// omarchy-notification-send --exec. Carrying the action as data means it
-// travels with the popup through the persistence files, so a toast restored
-// after a shell restart clicks through exactly like a live one. A libnotify
-// action can't: its sender is still waiting on an id from a server generation
-// that no longer exists.
-function execFromHints(hints) {
-  return stringHint(hints, "omarchy-exec")
+// Hard limits for producer-side safety
+var MAX_APP_CHARS = 64
+var MAX_SUMMARY_CHARS = 256
+var MAX_BODY_CHARS = 2048
+var MAX_GLYPH_CHARS = 8
+var MAX_CHANNEL_CHARS = 64
+var MAX_ICON_CHARS = 256
+var MAX_IMAGE_CHARS = 512
+
+function sanitizeText(val, maxChars) {
+  if (val === undefined || val === null) return ""
+  var s = String(val)
+  if (s.length > maxChars) {
+    s = s.slice(0, maxChars)
+  }
+  // Strip dangerous control characters except newline and tab
+  return s.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "")
+}
+
+function validateImageSource(src) {
+  var s = String(src || "").trim()
+  if (!s || s.length > MAX_IMAGE_CHARS) return ""
+  // Reject remote and unsafe schemes
+  if (/^(https?|ftp|data|javascript|qrc):/i.test(s)) return ""
+  // Reject path traversal
+  if (s.indexOf("..") !== -1) return ""
+  // Safe local schemes
+  if (s.indexOf("file://") === 0 || s.indexOf("/") === 0 || s.indexOf("image://") === 0) {
+    return s
+  }
+  // Standard icon names: alphanumeric, -, _, .
+  if (/^[a-zA-Z0-9_\-\.]+$/.test(s)) {
+    return s
+  }
+  return ""
 }
 
 function shouldRenderCompactGlyph(glyph, iconSource, singleLineToast) {
@@ -108,29 +135,46 @@ function extractChannel(app, summary, body, hints) {
 
 function snapshotOf(notification, timestamp) {
   var n = notification || {}
-  var id = n.id || 0
+  var id = Number(n.id || 0)
+  if (!isFinite(id) || id < 0) id = 0
+
   var expireTimeout = Number(n.expireTimeout || 0)
   if (!isFinite(expireTimeout) || expireTimeout < 0) expireTimeout = 0
+  if (expireTimeout > 86400000) expireTimeout = 86400000
+
+  var urgency = Number(n.urgency || 0)
+  if (!isFinite(urgency) || urgency < 0 || urgency > 2) urgency = 1
+
+  var app = sanitizeText(n.appName, MAX_APP_CHARS)
+  var summary = sanitizeText(n.summary, MAX_SUMMARY_CHARS)
+  var body = sanitizeText(n.body, MAX_BODY_CHARS)
+  var glyph = sanitizeText(glyphFromHints(n.hints), MAX_GLYPH_CHARS)
+  var channel = sanitizeText(extractChannel(app, summary, body, n.hints), MAX_CHANNEL_CHARS)
+  var appIcon = validateImageSource(n.appIcon)
+  var image = validateImageSource(n.image)
+
+  var ts = Number(timestamp === undefined ? Date.now() : timestamp)
+  if (!isFinite(ts) || ts <= 0) ts = Date.now()
+
   return {
     id: id,
     originalId: id,
-    app: n.appName || "",
-    appIcon: n.appIcon || "",
-    summary: String(n.summary || ""),
-    body: n.body || "",
-    image: n.image || "",
-    glyph: glyphFromHints(n.hints),
-    exec: execFromHints(n.hints),
-    channel: extractChannel(n.appName, n.summary, n.body, n.hints),
-    urgency: n.urgency,
+    app: app,
+    appIcon: appIcon,
+    summary: summary,
+    body: body,
+    image: image,
+    glyph: glyph,
+    channel: channel,
+    urgency: urgency,
     expireTimeout: expireTimeout,
-    timestamp: timestamp === undefined ? Date.now() : timestamp
+    timestamp: ts
   }
 }
 
 // Everything the popup card draws, and therefore everything an in-place
 // update has to write through to the row and its file.
-var POPUP_ROLES = ["app", "appIcon", "summary", "body", "image", "glyph", "exec", "channel", "urgency", "expireTimeout"]
+var POPUP_ROLES = ["app", "appIcon", "summary", "body", "image", "glyph", "channel", "urgency", "expireTimeout"]
 
 function popupRoles() {
   return POPUP_ROLES
@@ -163,20 +207,24 @@ function replacementSnapshot(notification, originalId, timestamp) {
 
 function historyEntry(value, normalUrgency) {
   var e = value || {}
+  var id = Number(e.id || 0)
+  var originalId = Number(e.originalId || e.id || 0)
+  var urgency = typeof e.urgency === "number" ? Math.max(0, Math.min(2, e.urgency)) : normalUrgency
+  var ts = Number(e.timestamp || 0)
+
   return {
-    id: e.id || 0,
-    originalId: e.originalId || e.id || 0,
-    app: e.app || "",
-    appIcon: e.appIcon || "",
-    summary: e.summary || "",
-    body: e.body || "",
-    image: e.image || "",
-    glyph: e.glyph || "",
-    exec: e.exec || "",
-    channel: e.channel || "",
-    urgency: typeof e.urgency === "number" ? e.urgency : normalUrgency,
+    id: isFinite(id) ? id : 0,
+    originalId: isFinite(originalId) ? originalId : 0,
+    app: sanitizeText(e.app, MAX_APP_CHARS),
+    appIcon: validateImageSource(e.appIcon),
+    summary: sanitizeText(e.summary, MAX_SUMMARY_CHARS),
+    body: sanitizeText(e.body, MAX_BODY_CHARS),
+    image: validateImageSource(e.image),
+    glyph: sanitizeText(e.glyph, MAX_GLYPH_CHARS),
+    channel: sanitizeText(e.channel, MAX_CHANNEL_CHARS),
+    urgency: urgency,
     expireTimeout: 0,
-    timestamp: e.timestamp || 0
+    timestamp: isFinite(ts) ? ts : 0
   }
 }
 
@@ -485,7 +533,8 @@ if (typeof module !== "undefined") {
     isEphemeralApp: isEphemeralApp,
     stringHint: stringHint,
     glyphFromHints: glyphFromHints,
-    execFromHints: execFromHints,
+    validateImageSource: validateImageSource,
+    sanitizeText: sanitizeText,
     shouldRenderCompactGlyph: shouldRenderCompactGlyph,
     snapshotOf: snapshotOf,
     popupRoles: popupRoles,

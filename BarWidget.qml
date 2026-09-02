@@ -4,10 +4,10 @@ import qs.Ui
 
 BarWidget {
   id: root
-  moduleName: "andrew.notifications"
+  moduleName: "andrewscofield.notifications-settings"
 
   readonly property var service: bar && bar.shell
-    ? (bar.shell.serviceFor(root.moduleName) || bar.shell.serviceFor("andrew.notifications") || bar.shell.serviceFor("omarchy-notifications-settings") || bar.shell.firstPartyServiceFor("omarchy.notifications"))
+    ? (bar.shell.serviceFor("andrewscofield.notifications-settings") || bar.shell.serviceFor(root.moduleName) || bar.shell.serviceFor("andrew.notifications") || bar.shell.firstPartyServiceFor("omarchy.notifications"))
     : null
   readonly property bool isCenter: root.region === "center"
   readonly property bool centerHovered: bar && bar.centerSectionRevealHeld === true && bar.centerHoverRevealSuppressed !== true

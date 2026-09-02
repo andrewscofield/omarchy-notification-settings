@@ -37,7 +37,7 @@ BorderSurface {
   signal cardClicked()
   // Prefer per-notification media/avatar data, then fall back to the app icon.
   // The `check` flag avoids Qt's missing-texture placeholder for unknown names.
-  readonly property string smallIconSource: image.length > 0 ? image : iconSource(appIcon)
+  readonly property string smallIconSource: image.length > 0 ? NotificationLogic.validateImageSource(image) : iconSource(appIcon)
   readonly property bool hasGlyph: glyph.length > 0
   readonly property bool compactGlyph: NotificationLogic.shouldRenderCompactGlyph(glyph, smallIconSource, singleLineToast)
   readonly property bool hasSmallIcon: smallIconSource.length > 0
@@ -45,7 +45,6 @@ BorderSurface {
   readonly property bool singleLineToast: sanitizedBody.length === 0
   readonly property bool collapseRedundantIcon: singleLineToast && !hasGlyph && summaryStartsWithGlyph
   readonly property string sanitizedBody: sanitizeBody(body)
-  readonly property string styledBody: sanitizedBody.replace(/\r\n|\r|\n/g, "<br/>")
 
   readonly property var otpData: NotificationLogic.extractOtp(summary, sanitizedBody)
   readonly property string otpCode: otpData ? otpData.code : ""
@@ -66,9 +65,11 @@ BorderSurface {
   function iconSource(icon) {
     var value = String(icon || "")
     if (value.length === 0) return ""
-    if (value.indexOf("file://") === 0 || value.indexOf("image://") === 0) return value
-    if (value.charAt(0) === "/") return Util.fileUrl(value)
-    return Quickshell.iconPath(value, true)
+    var validated = NotificationLogic.validateImageSource(value)
+    if (!validated) return ""
+    if (validated.indexOf("file://") === 0 || validated.indexOf("image://") === 0) return validated
+    if (validated.charAt(0) === "/") return Util.fileUrl(validated)
+    return Quickshell.iconPath(validated, true)
   }
 
   implicitWidth: Style.space(380)
@@ -145,6 +146,7 @@ BorderSurface {
           anchors.centerIn: parent
           visible: root.hasGlyph && smallIconImage.status !== Image.Ready
           text: root.glyph
+          textFormat: Text.PlainText
           color: Color.notifications.text
           font.family: root.fontFamily
           font.pixelSize: Style.font.displayLarge
@@ -155,6 +157,7 @@ BorderSurface {
         Layout.alignment: Qt.AlignVCenter
         visible: root.compactGlyph
         text: root.glyph
+        textFormat: Text.PlainText
         color: Color.notifications.text
         font.family: root.fontFamily
         font.pixelSize: Style.font.icon
@@ -174,6 +177,7 @@ BorderSurface {
           Text {
             visible: root.app.length > 0 && root.app.toLowerCase() !== root.summary.toLowerCase()
             text: root.app
+            textFormat: Text.PlainText
             font.family: "Liberation Sans"
             font.pixelSize: Style.font.caption
             font.bold: true
@@ -184,6 +188,7 @@ BorderSurface {
           Text {
             visible: (root.app.length > 0 && root.app.toLowerCase() !== root.summary.toLowerCase()) && root.channel.length > 0
             text: "·"
+            textFormat: Text.PlainText
             font.family: "Liberation Sans"
             font.pixelSize: Style.font.caption
             color: root.dimColor
@@ -202,6 +207,7 @@ BorderSurface {
               id: channelLabel
               anchors.centerIn: parent
               text: root.channel
+              textFormat: Text.PlainText
               font.family: "Liberation Sans"
               font.pixelSize: Style.font.caption
               font.bold: true
@@ -215,6 +221,7 @@ BorderSurface {
           Layout.fillWidth: true
           visible: root.summary.length > 0
           text: root.summary
+          textFormat: Text.PlainText
           font.family: "Liberation Sans"
           color: Color.notifications.text
           font.pixelSize: Style.font.title
@@ -228,8 +235,8 @@ BorderSurface {
           Layout.fillWidth: true
           Layout.topMargin: Style.space(2)
           visible: root.sanitizedBody.length > 0
-          text: root.styledBody
-          textFormat: Text.StyledText
+          text: root.sanitizedBody
+          textFormat: Text.PlainText
           font.family: "Liberation Sans"
           color: root.bodyColor
           font.pixelSize: Style.font.title
@@ -264,6 +271,7 @@ BorderSurface {
 
           Text {
             text: root.copiedOtp ? "✓" : "📋"
+            textFormat: Text.PlainText
             font.family: root.fontFamily
             font.pixelSize: Style.font.body
             color: otpArea.containsMouse ? Color.background : Color.accent
@@ -271,6 +279,7 @@ BorderSurface {
 
           Text {
             text: root.copiedOtp ? "Copied to Clipboard!" : ("Copy Code: " + root.otpDisplay)
+            textFormat: Text.PlainText
             font.family: "Liberation Sans"
             font.pixelSize: Style.font.body
             font.bold: true

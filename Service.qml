@@ -37,6 +37,8 @@ Item {
   // originals don't outlive the notification (see persistablePopup). Each
   // copy lives and dies with the JSON file whose stem it carries.
   readonly property string imagesDir: popupStateDir + "images/"
+  readonly property string storageScript: home + "/.config/omarchy/plugins/andrewscofield.notifications-settings/scripts/storage.sh"
+  readonly property int maxActivePopups: 20
   // Corner radius is shared with the menu and shell panels.
   // It mirrors Hyprland's current decoration:rounding value.
   readonly property int cornerRadius: Style.cornerRadius
@@ -222,6 +224,9 @@ Item {
       removePopupsByOriginalId(snapshot.originalId, NotificationLogic.popupFileName(snapshot))
       removePopupsByGroup(snapshot, NotificationLogic.popupFileName(snapshot))
       popupModel.insert(0, snapshot)
+      while (popupModel.count > service.maxActivePopups) {
+        service.dismissPopup(popupModel.count - 1)
+      }
       // An update that arrived while the insert was deferred found no row to
       // write to, and a property that already changed will not change again.
       // Reading the object once the row exists catches up on it.
@@ -430,22 +435,11 @@ Item {
     while (popupModel.count > 0) dismissPopup(0)
   }
 
-  // Run the popup's click action, then dismiss. Omarchy's own toasts carry the
-  // action as a command in the `exec` role (see execFromHints), which the
-  // persistence files preserve, so restored toasts stay clickable. Third-party
-  // clients register a libnotify action under the canonical identifier
-  // "default" instead; that one only works while the sender is still live.
+  // Run the popup's client-registered default action, then dismiss.
+  // Arbitrary shell commands are explicitly forbidden and removed for security.
   function invokePopupDefault(index) {
     if (index < 0 || index >= popupModel.count) return
     var entry = popupModel.get(index)
-    var command = entry ? String(entry.exec || "") : ""
-    if (command) {
-      // Detached so the launched command outlives the shell process, which the
-      // installer toasts depend on: they restart the shell as their first act.
-      Util.execDetached(command)
-      dismissPopup(index)
-      return
-    }
     // Restored rows have no live actions, and looking up liveRefs by their
     // old-generation id could fire an unrelated fresh notification's action.
     var ref = entry && !isRestoredRow(entry) ? liveRefs[entry.originalId] : null
@@ -488,7 +482,7 @@ Item {
 
   Process {
     id: ensureDirsProc
-    command: ["mkdir", "-p", service.stateDir, service.popupStateDir, service.historyDir, service.imagesDir]
+    command: [service.storageScript, "ensure-dirs", service.stateDir]
     running: false
   }
 
@@ -561,128 +555,52 @@ Item {
     }
   }
 
-  // Consumes the remaining args as from/to pairs. Bounded read into a temp
-  // file, validated, then renamed into place: the source path is
-  // sender-controlled and may grow, block, or become a FIFO mid-copy, and
-  // must neither hang the serialized queue nor fill the state dir.
-  readonly property string copyImagesScript:
-    "while (( $# >= 2 )); do\n" +
-    "  if [[ -f $1 ]] && timeout 5 head -c 5242881 -- \"$1\" > \"$2.tmp\" 2>/dev/null &&\n" +
-    "     (( $(stat -c%s -- \"$2.tmp\") <= 5242880 )); then mv -f -- \"$2.tmp\" \"$2\"; else rm -f -- \"$2.tmp\"; fi\n" +
-    "  shift 2\n" +
-    "done\n"
-
   function persistPopupFile(snapshot) {
-    // The JSON travels as an argument, not through shell interpolation, so
-    // summaries/bodies with quotes or backticks can't break the command. The
-    // mkdir guards notifications that arrive before ensureDirsProc has run.
-    // Copies run before the JSON referencing them, while the source exists.
     var persistable = NotificationLogic.persistablePopup(snapshot, imagesDir)
-    var command = ["bash", "-c",
-      "mkdir -p \"$1\" \"$2\" || exit 0\n" +
-      "dir=\"$1\" json=\"$3\" name=\"$4\"\n" +
-      "shift 4\n" +
-      copyImagesScript +
-      "printf '%s\\n' \"$json\" > \"$dir/$name\"", "--",
-      popupStateDir,
-      imagesDir,
-      NotificationLogic.serializePopup(persistable.entry, NotificationUrgency.Normal),
-      NotificationLogic.popupFileName(snapshot)]
-    for (var i = 0; i < persistable.copies.length; i++)
-      command.push(persistable.copies[i].from, persistable.copies[i].to)
-    enqueuePopupFileJob(command)
+    for (var i = 0; i < persistable.copies.length; i++) {
+      var cp = persistable.copies[i]
+      var stem = NotificationLogic.imageStem(snapshot) + "-" + NotificationLogic.popupRoles()[i]
+      enqueuePopupFileJob([service.storageScript, "copy-image", cp.from, imagesDir, stem])
+    }
+    var json = NotificationLogic.serializePopup(persistable.entry, NotificationUrgency.Normal)
+    var fileName = NotificationLogic.popupFileName(snapshot)
+    enqueuePopupFileJob([service.storageScript, "write-json", popupStateDir, fileName, json])
   }
 
   function deletePopupFileFor(row) {
     if (!row) return
-    // History replays and the "no recent notifications" placeholder never
-    // had a file — rm -f on the computed paths is a harmless no-op there.
-    enqueuePopupFileJob(["bash", "-c",
-      "rm -f \"$1/$2.json\" \"$3/$2\"-*", "--",
-      popupStateDir, NotificationLogic.imageStem(row), imagesDir])
+    var stem = NotificationLogic.imageStem(row)
+    enqueuePopupFileJob([service.storageScript, "delete", popupStateDir, imagesDir, stem])
   }
-
-  // ---------------------------------------------------- history
-  //
-  // A popup that leaves the screen keeps its file — it just moves one level
-  // down, into historyDir. Trimming happens right there in the same shell
-  // job: the names sort numerically by their leading millisecond timestamp,
-  // so everything but the newest historyLimit files is the tail to drop,
-  // image copies included. Callers set $hist, $limit and $imgs first.
-  readonly property string trimHistoryScript:
-    "ls -1 \"$hist\" 2>/dev/null | sort -n | head -n \"-$limit\" | while IFS= read -r stale; do rm -f \"$hist/$stale\" \"$imgs/${stale%.json}\"-*; done"
 
   function archivePopupFileFor(row) {
     if (!row) return
-    // A history replay or the empty-history placeholder has no file to move;
-    // the failed mv leaves the history untouched, trimming included. Image
-    // copies stay put — live and archived entries share imagesDir.
-    enqueuePopupFileJob(["bash", "-c",
-      "mkdir -p \"$1\" || exit 0\n" +
-      "hist=\"$1\" limit=\"$2\" imgs=\"$5\"\n" +
-      "mv -f \"$4/$3\" \"$1/$3\" 2>/dev/null || exit 0\n" +
-      trimHistoryScript, "--",
-      historyDir,
-      String(historyLimit),
-      NotificationLogic.popupFileName(row),
-      popupStateDir,
-      imagesDir])
+    var fileName = NotificationLogic.popupFileName(row)
+    enqueuePopupFileJob([service.storageScript, "archive", popupStateDir, historyDir, fileName, String(service.historyLimit), imagesDir])
   }
 
-  // Record a notification that never made it to the screen (DND silenced it),
-  // straight into history. Same file format as an archived popup, so the
-  // replay can't tell the two apart.
-  //
-  // A silenced notification is untracked the moment it arrives, so the server
-  // has nothing left for a later replaces_id to replace and hands the sender a
-  // fresh id instead. Every update from a chatty thread is therefore its own
-  // notification here, and several can sit in the ten slots together — there
-  // is no id to recognize them by, and guessing from app and summary would
-  // merge genuinely separate messages.
   function writeHistoryFile(entry, done) {
     if (!entry) {
       if (done) done()
       return
     }
     var persistable = NotificationLogic.persistablePopup(entry, imagesDir)
-    var command = ["bash", "-c",
-      "mkdir -p \"$1\" \"$5\" || exit 0\n" +
-      "hist=\"$1\" limit=\"$2\" name=\"$3\" json=\"$4\" imgs=\"$5\"\n" +
-      "shift 5\n" +
-      copyImagesScript +
-      "printf '%s\\n' \"$json\" > \"$hist/$name\" || exit 0\n" +
-      trimHistoryScript, "--",
-      historyDir,
-      String(historyLimit),
-      NotificationLogic.popupFileName(entry),
-      NotificationLogic.serializePopup(persistable.entry, NotificationUrgency.Normal),
-      imagesDir]
-    for (var i = 0; i < persistable.copies.length; i++)
-      command.push(persistable.copies[i].from, persistable.copies[i].to)
-    enqueuePopupFileJob(command, done)
+    for (var i = 0; i < persistable.copies.length; i++) {
+      var cp = persistable.copies[i]
+      var stem = NotificationLogic.imageStem(entry) + "-" + NotificationLogic.popupRoles()[i]
+      enqueuePopupFileJob([service.storageScript, "copy-image", cp.from, imagesDir, stem])
+    }
+    var json = NotificationLogic.serializePopup(persistable.entry, NotificationUrgency.Normal)
+    var fileName = NotificationLogic.popupFileName(entry)
+    enqueuePopupFileJob([service.storageScript, "write-json", historyDir, fileName, json], done)
   }
 
   function clearHistory() {
-    enqueuePopupFileJob(["bash", "-c",
-      "for f in \"$1\"/*.json; do\n" +
-      "  [[ -e $f ]] || continue\n" +
-      "  stale=\"${f##*/}\"\n" +
-      "  rm -f \"$f\" \"$2/${stale%.json}\"-*\n" +
-      "done", "--", historyDir, imagesDir])
+    enqueuePopupFileJob([service.storageScript, "clear-history", historyDir, imagesDir, popupStateDir])
   }
 
-  // A restart can kill a queued job between its cp and its JSON write,
-  // leaving copies no JSON-derived cleanup can name. Swept at startup,
-  // through the queue so in-flight copies aren't mistaken for orphans.
   function sweepOrphanImages() {
-    enqueuePopupFileJob(["bash", "-c",
-      "for img in \"$3\"/*; do\n" +
-      "  [[ -e $img ]] || continue\n" +
-      "  [[ $img == *.tmp ]] && { rm -f -- \"$img\"; continue; }\n" +
-      "  stem=\"${img##*/}\"\n" +
-      "  stem=\"${stem%-*}\"\n" +
-      "  [[ -e $1/$stem.json || -e $2/$stem.json ]] || rm -f \"$img\"\n" +
-      "done", "--", popupStateDir, historyDir, imagesDir])
+    enqueuePopupFileJob([service.storageScript, "sweep-images", imagesDir, popupStateDir, historyDir])
   }
 
   Process {
@@ -719,8 +637,7 @@ Item {
 
   function startHistoryRead() {
     service.historyReadQueued = false
-    readHistoryProc.command = ["bash", "-c",
-      "awk 1 \"$1\"/*.json 2>/dev/null || true", "--", historyDir]
+    readHistoryProc.command = [service.storageScript, "read-history", historyDir, String(service.historyLimit)]
     readHistoryProc.running = true
   }
 
@@ -743,7 +660,7 @@ Item {
         body: row.body,
         image: row.image,
         glyph: row.glyph || "",
-        exec: row.exec || "",
+        channel: row.channel || "",
         urgency: row.urgency,
         timestamp: row.timestamp
       }, imagesDir).entry)
@@ -767,7 +684,7 @@ Item {
         body: "",
         image: "",
         glyph: "󰂚",
-        exec: "",
+        channel: "",
         urgency: NotificationUrgency.Low,
         expireTimeout: 0,
         timestamp: Date.now()
@@ -916,7 +833,7 @@ Item {
   }
 
   function flushSettings() {
-    settingsFile.setText(JSON.stringify({
+    var json = JSON.stringify({
       version: 5,
       dnd: persisted.doNotDisturb,
       position: persisted.position,
@@ -924,7 +841,8 @@ Item {
       groupingMode: persisted.groupingMode,
       infiniteChat: persisted.infiniteChat,
       otpCopy: persisted.otpCopy
-    }, null, 2) + "\n")
+    }, null, 2) + "\n"
+    enqueuePopupFileJob([service.storageScript, "write-json", stateDir, "notifications.json", json])
   }
 
   Component.onCompleted: {
@@ -935,11 +853,7 @@ Item {
     Qt.callLater(function() {
       settingsFile.reload()
       // Re-show popups that were on screen when the previous shell died.
-      // The glob-through-bash tolerates a missing/empty dir (first run).
-      // awk 1 (not cat) so a torn file missing its trailing newline can't
-      // glue itself onto the next file and take a valid popup down with it.
-      restorePopupsProc.command = ["bash", "-c",
-        "awk 1 \"$1\"/*.json 2>/dev/null || true", "--", service.popupStateDir]
+      restorePopupsProc.command = [service.storageScript, "read-active", service.popupStateDir]
       restorePopupsProc.running = true
       // Safe beside the restore read: it only re-persists entries whose
       // JSON exists, exactly the images the sweep keeps.

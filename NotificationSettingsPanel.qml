@@ -7,7 +7,7 @@ import qs.Ui
 KeyboardPanel {
   id: root
 
-  property var service: bar && bar.shell ? bar.shell.serviceFor("andrew.notifications") : null
+  property var service: bar && bar.shell ? (bar.shell.serviceFor("andrewscofield.notifications-settings") || bar.shell.serviceFor("andrew.notifications") || bar.shell.firstPartyServiceFor("omarchy.notifications")) : null
   property bool previewSent: false
 
   centerOnBar: true
