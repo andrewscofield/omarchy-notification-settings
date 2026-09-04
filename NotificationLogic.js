@@ -5,8 +5,31 @@ function isChromiumDerived(app, appIcon) {
          source.indexOf("opera") >= 0
 }
 
+function isImageTag(tag) {
+  var name = /^<[^A-Za-z0-9]*([A-Za-z0-9]+)/.exec(tag)
+  return !!name && name[1].toLowerCase() === "img"
+}
+
+function stripImageTags(text) {
+  var out = ""
+  var i = 0
+  while (i < text.length) {
+    var open = text.indexOf("<", i)
+    if (open === -1) {
+      out += text.slice(i)
+      break
+    }
+    out += text.slice(i, open)
+    var close = text.indexOf(">", open)
+    var tag = close === -1 ? text.slice(open) : text.slice(open, close + 1)
+    if (!isImageTag(tag)) out += tag
+    i = close === -1 ? text.length : close + 1
+  }
+  return out
+}
+
 function sanitizeBody(body, app, appIcon) {
-  var text = String(body || "").replace(/<img[^>]*>/gi, "")
+  var text = stripImageTags(String(body || ""))
   if (!isChromiumDerived(app, appIcon)) return text
 
   return text
@@ -70,13 +93,10 @@ function sanitizeText(val, maxChars) {
   if (val === undefined || val === null) return ""
   // Strip Unicode directional formatting isolates (FSI, PDI, LRI, RLI, LTR, RTL marks) used by apps like Signal
   var s = String(val).replace(/[\u200E\u200F\u202A-\u202E\u2066-\u2069]/g, "")
-  // Strip Unicode directional formatting isolates (FSI, PDI, LRI, RLI, LTR, RTL marks) used by apps like Signal
-  var s = String(val).replace(/[\u200E\u200F\u202A-\u202E\u2066-\u2069]/g, "")
   if (s.length > maxChars) {
     s = s.slice(0, maxChars)
   }
   // Strip dangerous control characters except newline and tab
-  return s.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "").trim()
   return s.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "").trim()
 }
 
@@ -87,6 +107,10 @@ function validateImageSource(src) {
   if (/^(https?|ftp|data|javascript|qrc):/i.test(s)) return ""
   // Reject path traversal
   if (s.indexOf("..") !== -1) return ""
+  // Reject access to sensitive user or system directories
+  if (/\/(?:\.ssh|\.gnupg|\.local\/share\/keyrings|\.bash_history|\.zsh_history|etc|proc|sys|dev)(?:\/|$)/i.test(s)) {
+    return ""
+  }
   // Safe local schemes
   if (s.indexOf("file://") === 0 || s.indexOf("/") === 0 || s.indexOf("image://") === 0) {
     return s
@@ -366,7 +390,7 @@ function persistablePopup(entry, imagesDir) {
     var source = localImageFile(value)
     if (source) {
       var copy = String(imagesDir || "") + imageStem(e) + "-" + role
-      if (source !== copy) copies.push({ from: source, to: copy })
+      if (source !== copy) copies.push({ from: source, to: copy, role: role })
       out[role] = "file://" + copy
     } else if (value.indexOf("image://") === 0) {
       out[role] = ""
@@ -511,17 +535,7 @@ function extractOtp(summary, body) {
   // OTP codes are strictly numeric (4-8 digits, e.g. 123456 or 123-456).
   // Pure alphabetic English words (like "review", "request", "login") MUST NEVER match.
   var numPattern = "(?:[A-Z]-)?([0-9]{4,8}|[0-9]{3}[-\\s][0-9]{3})"
-  // Requires explicit delimiter (: = is -) or strong framing.
-  // OTP codes are strictly numeric (4-8 digits, e.g. 123456 or 123-456).
-  // Pure alphabetic English words (like "review", "request", "login") MUST NEVER match.
-  var numPattern = "(?:[A-Z]-)?([0-9]{4,8}|[0-9]{3}[-\\s][0-9]{3})"
   var patterns = [
-    new RegExp("(?:verification|security|authentication|auth|confirmation|login|access|one-time|otp|passcode|pin)\\s+code\\s*(?:is|:|=|-)\\s*[:#]?\\s*" + numPattern + "\\b", "i"),
-    new RegExp("\\b(?:code|otp|passcode|pin)\\s*(?:is|:|=)\\s*[:#]?\\s*" + numPattern + "\\b", "i"),
-    new RegExp("\\b" + numPattern + "\\s+is\\s+your\\s+(?:[a-z0-9_-]+\\s+)?(?:verification|security|authentication|login|confirmation|access|one-time|otp|code)\\b", "i"),
-    new RegExp("(?:use|enter|type|input)\\s+(?:code\\s+)?" + numPattern + "\\s+to\\s+(?:verify|log\\s*in|sign\\s*in|authenticate|confirm|continue|access)\\b", "i"),
-    // Steam Guard specifically uses 5 alphanumeric characters
-    /\bSteam\s+Guard\s*(?:code)?\s*[:=]\s*([A-Z0-9]{5})\b/i
     new RegExp("(?:verification|security|authentication|auth|confirmation|login|access|one-time|otp|passcode|pin)\\s+code\\s*(?:is|:|=|-)\\s*[:#]?\\s*" + numPattern + "\\b", "i"),
     new RegExp("\\b(?:code|otp|passcode|pin)\\s*(?:is|:|=)\\s*[:#]?\\s*" + numPattern + "\\b", "i"),
     new RegExp("\\b" + numPattern + "\\s+is\\s+your\\s+(?:[a-z0-9_-]+\\s+)?(?:verification|security|authentication|login|confirmation|access|one-time|otp|code)\\b", "i"),
@@ -536,8 +550,6 @@ function extractOtp(summary, body) {
       var rawCode = match[1].trim()
       // Strip any single-letter prefix with hyphen (e.g. V-123456 -> 123456)
       var cleanCode = rawCode.replace(/^[A-Za-z]-/, "").replace(/[-\s]/g, "")
-      // Strip any single-letter prefix with hyphen (e.g. V-123456 -> 123456)
-      var cleanCode = rawCode.replace(/^[A-Za-z]-/, "").replace(/[-\s]/g, "")
       // Avoid matching years
       if (cleanCode.length === 4 && (cleanCode.indexOf("19") === 0 || cleanCode.indexOf("20") === 0)) {
         continue
@@ -549,10 +561,7 @@ function extractOtp(summary, body) {
   // 3. Fallback: If text contains strong OTP keywords, find 4-8 digit numbers
   if (/\b(?:your\s+one-time\s+password|your\s+otp|your\s+passcode|2fa\s+code|mfa\s+code)\b/i.test(text)) {
     var fallbackMatch = text.match(/\b([0-9]{3}[-\s][0-9]{3}|[0-9]{4,8})\b/)
-  if (/\b(?:your\s+one-time\s+password|your\s+otp|your\s+passcode|2fa\s+code|mfa\s+code)\b/i.test(text)) {
-    var fallbackMatch = text.match(/\b([0-9]{3}[-\s][0-9]{3}|[0-9]{4,8})\b/)
     if (fallbackMatch) {
-      var clean = fallbackMatch[1].replace(/[-\s]/g, "")
       var clean = fallbackMatch[1].replace(/[-\s]/g, "")
       if (!(clean.length === 4 && (clean.indexOf("19") === 0 || clean.indexOf("20") === 0))) {
         return { code: clean, raw: clean }

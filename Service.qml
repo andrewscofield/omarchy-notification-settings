@@ -179,11 +179,11 @@ Item {
   // screen; the distinction only decides whether a DND-silenced one is worth
   // recording at all.
   function isEphemeral(notification) {
-    var transient = false
+    var isTransient = false
     try {
-      transient = !!(notification.hints && notification.hints["transient"])
-    } catch (e) { transient = false }
-    return transient || NotificationLogic.isEphemeralApp(String(notification.appName || ""))
+      isTransient = !!(notification.hints && notification.hints["transient"])
+    } catch (e) { isTransient = false }
+    return isTransient || NotificationLogic.isEphemeralApp(String(notification.appName || ""))
   }
 
   function handleNotification(notification) {
@@ -471,9 +471,11 @@ Item {
   // sender. The helper handles case-insensitive class matching.
   function focusApp(entry) {
     if (!entry || !entry.app) return
+    var cleanApp = String(entry.app || "").replace(/[^a-zA-Z0-9_\-\. ]/g, "").trim()
+    if (!cleanApp) return
     focusAppProc.command = [
       service.omarchyPath + "/bin/omarchy-hyprland-focus-app",
-      String(entry.app)
+      cleanApp
     ]
     focusAppProc.running = true
   }
@@ -500,19 +502,20 @@ Item {
   // match these rows against fresh notifications.
   property var restoredPopups: ({})
 
-  // Entries are either { command, done } for a file job or { read: true } for
-  // a replay's directory read. Queueing the read rather than running it beside
-  // the queue is what makes it a barrier: it takes its place in line, so the
-  // history it sees is the one that existed when the replay was asked for.
-  // Everything queued after it — a clear, an archive, a silenced write — waits
-  // for it, and no amount of later traffic can push it back.
+  // Entries are { command, input, done }
   property var popupFileQueue: []
-
-  // Done callback of the job popupFileProc is currently running.
   property var runningPopupFileJobDone: null
 
-  function enqueuePopupFileJob(command, done) {
-    popupFileQueue = popupFileQueue.concat([{ command: command, done: done || null }])
+  function enqueuePopupFileJob(command, input, done) {
+    if (typeof input === "function") {
+      done = input
+      input = ""
+    }
+    popupFileQueue = popupFileQueue.concat([{
+      command: command,
+      input: typeof input === "string" ? input : "",
+      done: done || null
+    }])
     runNextPopupFileJob()
   }
 
@@ -533,6 +536,7 @@ Item {
       return
     }
 
+    popupFileProc.pendingInput = job.input || ""
     popupFileProc.command = job.command
     service.runningPopupFileJobDone = job.done || null
     popupFileProc.running = true
@@ -540,7 +544,15 @@ Item {
 
   Process {
     id: popupFileProc
+    property string pendingInput: ""
+    stdinEnabled: true
     running: false
+    onStarted: {
+      if (pendingInput.length > 0) {
+        write(pendingInput + "\n")
+        pendingInput = ""
+      }
+    }
     onExited: {
       var done = service.runningPopupFileJobDone
       service.runningPopupFileJobDone = null
@@ -559,12 +571,13 @@ Item {
     var persistable = NotificationLogic.persistablePopup(snapshot, imagesDir)
     for (var i = 0; i < persistable.copies.length; i++) {
       var cp = persistable.copies[i]
-      var stem = NotificationLogic.imageStem(snapshot) + "-" + NotificationLogic.popupRoles()[i]
+      var stem = NotificationLogic.imageStem(snapshot) + "-" + (cp.role || ("role" + i))
       enqueuePopupFileJob([service.storageScript, "copy-image", cp.from, imagesDir, stem])
     }
     var json = NotificationLogic.serializePopup(persistable.entry, NotificationUrgency.Normal)
+    if (json.length > 32768) json = json.slice(0, 32768)
     var fileName = NotificationLogic.popupFileName(snapshot)
-    enqueuePopupFileJob([service.storageScript, "write-json", popupStateDir, fileName, json])
+    enqueuePopupFileJob([service.storageScript, "write-json", popupStateDir, fileName], json)
   }
 
   function deletePopupFileFor(row) {
@@ -587,12 +600,13 @@ Item {
     var persistable = NotificationLogic.persistablePopup(entry, imagesDir)
     for (var i = 0; i < persistable.copies.length; i++) {
       var cp = persistable.copies[i]
-      var stem = NotificationLogic.imageStem(entry) + "-" + NotificationLogic.popupRoles()[i]
+      var stem = NotificationLogic.imageStem(entry) + "-" + (cp.role || ("role" + i))
       enqueuePopupFileJob([service.storageScript, "copy-image", cp.from, imagesDir, stem])
     }
     var json = NotificationLogic.serializePopup(persistable.entry, NotificationUrgency.Normal)
+    if (json.length > 32768) json = json.slice(0, 32768)
     var fileName = NotificationLogic.popupFileName(entry)
-    enqueuePopupFileJob([service.storageScript, "write-json", historyDir, fileName, json], done)
+    enqueuePopupFileJob([service.storageScript, "write-json", historyDir, fileName], json, done)
   }
 
   function clearHistory() {
@@ -842,7 +856,7 @@ Item {
       infiniteChat: persisted.infiniteChat,
       otpCopy: persisted.otpCopy
     }, null, 2) + "\n"
-    enqueuePopupFileJob([service.storageScript, "write-json", stateDir, "notifications.json", json])
+    enqueuePopupFileJob([service.storageScript, "write-json", stateDir, "notifications.json"], json)
   }
 
   Component.onCompleted: {

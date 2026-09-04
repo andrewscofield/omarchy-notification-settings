@@ -296,7 +296,7 @@ BorderSurface {
           onClicked: function(mouse) {
             mouse.accepted = true
             root.copiedOtp = true
-            Util.execDetached("printf %s " + Util.shellQuote(root.otpCode) + " | wl-copy")
+            Util.execArgv(["wl-copy", "--sensitive", "--", root.otpCode])
             root.otpCopied(root.otpCode)
             otpResetTimer.restart()
           }
